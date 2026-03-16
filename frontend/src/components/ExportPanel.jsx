@@ -1,4 +1,5 @@
-import { Download, Lock, FileSpreadsheet, FileText } from 'lucide-react'
+import { useState } from 'react'
+import { Download, Lock, FileSpreadsheet, FileText, Info, ChevronDown, ChevronUp } from 'lucide-react'
 import clsx from 'clsx'
 
 export default function ExportPanel({ docId, canExport, blockers, approvedCount }) {
@@ -84,6 +85,31 @@ export default function ExportPanel({ docId, canExport, blockers, approvedCount 
         <p className="text-xs text-gray-500">
           {approvedCount} approved rule{approvedCount !== 1 ? 's' : ''} ready for export
         </p>
+      )}
+
+      <ExportInfoPanel />
+    </div>
+  )
+}
+
+function ExportInfoPanel() {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-lg">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs font-medium text-slate-600 hover:text-slate-800"
+      >
+        <Info className="h-3.5 w-3.5 shrink-0" />
+        <span className="flex-1">About export formats</span>
+        {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+      </button>
+      {open && (
+        <div className="px-3 pb-3 text-xs text-slate-600 leading-relaxed space-y-1.5 border-t border-slate-200 pt-2">
+          <p><strong>Excel Decision Table</strong> — A structured spreadsheet with one row per rule. Includes all fields: category, operator, value, conditions, outcomes, and source references. Suitable for importing into lending decision engines.</p>
+          <p><strong>NL Statements</strong> — Plain-English rule statements in a text file. Useful for compliance review, documentation, and sharing with non-technical stakeholders.</p>
+          <p className="text-slate-500 italic">Export is blocked until guardrails have been run and all flagged rules have been reviewed. Only rules with "approved" status are included in the export.</p>
+        </div>
       )}
     </div>
   )

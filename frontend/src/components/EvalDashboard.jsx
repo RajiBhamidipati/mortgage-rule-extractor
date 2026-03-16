@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import clsx from 'clsx'
-import { BarChart3, Target, Search, FileCheck } from 'lucide-react'
+import { BarChart3, Target, Search, FileCheck, Info, ChevronDown, ChevronUp } from 'lucide-react'
 
 const RAG_COLORS = {
   green: { bg: 'bg-green-100', text: 'text-green-800', ring: 'ring-green-500', dot: 'bg-green-500' },
@@ -10,16 +11,19 @@ const RAG_COLORS = {
 export default function EvalDashboard({ evalReport, onRunEval, loading }) {
   if (!evalReport) {
     return (
-      <div className="border rounded-lg p-6 text-center space-y-3">
-        <BarChart3 className="h-10 w-10 text-gray-300 mx-auto" />
-        <p className="text-gray-500 text-sm">No evaluation run yet</p>
-        <button
-          onClick={onRunEval}
-          disabled={loading}
-          className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 disabled:opacity-50"
-        >
-          {loading ? 'Running...' : 'Run Evaluation'}
-        </button>
+      <div className="space-y-3">
+        <div className="border rounded-lg p-6 text-center space-y-3">
+          <BarChart3 className="h-10 w-10 text-gray-300 mx-auto" />
+          <p className="text-gray-500 text-sm">No evaluation run yet</p>
+          <button
+            onClick={onRunEval}
+            disabled={loading}
+            className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 disabled:opacity-50"
+          >
+            {loading ? 'Running...' : 'Run Evaluation'}
+          </button>
+        </div>
+        <EvalInfoPanel />
       </div>
     )
   }
@@ -119,6 +123,32 @@ function MetricCard({ icon, label, value, detail }) {
       </div>
       <div className="text-xl font-bold text-gray-800">{value}</div>
       <div className="text-xs text-gray-400">{detail}</div>
+    </div>
+  )
+}
+
+function EvalInfoPanel() {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-lg">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs font-medium text-slate-600 hover:text-slate-800"
+      >
+        <Info className="h-3.5 w-3.5 shrink-0" />
+        <span className="flex-1">What is evaluation?</span>
+        {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+      </button>
+      {open && (
+        <div className="px-3 pb-3 text-xs text-slate-600 leading-relaxed space-y-1.5 border-t border-slate-200 pt-2">
+          <p>Evaluation compares extracted rules against a <strong>golden dataset</strong> — a hand-verified set of rules that should be found in this document.</p>
+          <p><strong>Precision</strong> — Of the rules extracted, how many are correct? Low precision means the AI is inventing rules.</p>
+          <p><strong>Recall</strong> — Of the expected rules, how many were found? Low recall means the AI is missing rules.</p>
+          <p><strong>F1 Score</strong> — The balance between precision and recall. The POC target is F1 ≥ 80%.</p>
+          <p><strong>Source Fidelity</strong> — What percentage of source quotes were verified in the document. Target ≥ 90%.</p>
+          <p><strong>EQS</strong> — The overall Extraction Quality Score combining all metrics. Green ≥ 80, Amber ≥ 60, Red &lt; 60.</p>
+        </div>
+      )}
     </div>
   )
 }

@@ -18,7 +18,7 @@ from schema import (
 
 client = anthropic.Anthropic()  # Uses ANTHROPIC_API_KEY env var
 
-MODEL = "claude-sonnet-4-6-20250514"
+MODEL = "claude-sonnet-4-6"
 
 EXTRACTION_PROMPT = """You are a mortgage lending policy analyst specialising in extracting structured rules from lender criteria documents.
 
@@ -92,6 +92,24 @@ def _strip_json_fences(text: str) -> str:
     return text.strip()
 
 
+def _repair_truncated_json(text: str) -> str:
+    """Attempt to recover a valid JSON array from a truncated response.
+
+    Finds the last complete object (ending with '}') and closes the array.
+    """
+    # Find the last complete JSON object boundary
+    last_brace = text.rfind("}")
+    if last_brace == -1:
+        return text
+    truncated = text[: last_brace + 1]
+    # Remove any trailing comma
+    truncated = truncated.rstrip().rstrip(",")
+    # Close the array
+    if not truncated.endswith("]"):
+        truncated += "\n]"
+    return truncated
+
+
 def _build_global_context(definitions: list[str]) -> str:
     """Build the Global Context Summary from extracted definitions (F-03)."""
     if not definitions:
@@ -136,14 +154,24 @@ def extract_rules(
         document_text=full_text,
     )
 
-    response = client.messages.create(
+    # Use streaming for long requests (required by Anthropic API for >10min ops)
+    raw_text = ""
+    stop_reason = None
+    with client.messages.stream(
         model=MODEL,
-        max_tokens=8192,
+        max_tokens=16384,
         messages=[{"role": "user", "content": prompt}],
-    )
+    ) as stream:
+        for text in stream.text_stream:
+            raw_text += text
+        stop_reason = stream.get_final_message().stop_reason
 
-    raw_text = response.content[0].text
     raw_text = _strip_json_fences(raw_text)
+
+    # If response was truncated, try to salvage valid JSON
+    if stop_reason == "max_tokens":
+        raw_text = _repair_truncated_json(raw_text)
+
     rules_data = json.loads(raw_text)
 
     rules: list[ExtractedRule] = []

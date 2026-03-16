@@ -20,7 +20,7 @@ from schema import ExtractedRule, GuardrailFlag, RuleStatus
 from parser import ParsedDocument
 
 client = anthropic.Anthropic()
-MODEL = "claude-sonnet-4-6-20250514"
+MODEL = "claude-sonnet-4-6"
 
 
 # ── Guardrail 1: Hallucination Check (F-09) ──
