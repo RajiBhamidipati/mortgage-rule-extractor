@@ -95,19 +95,28 @@ def _strip_json_fences(text: str) -> str:
 def _repair_truncated_json(text: str) -> str:
     """Attempt to recover a valid JSON array from a truncated response.
 
-    Finds the last complete object (ending with '}') and closes the array.
+    Progressively strips from the end until json.loads succeeds,
+    falling back to finding the last complete object boundary.
     """
-    # Find the last complete JSON object boundary
-    last_brace = text.rfind("}")
-    if last_brace == -1:
+    # Try parsing as-is first
+    try:
+        json.loads(text)
         return text
-    truncated = text[: last_brace + 1]
-    # Remove any trailing comma
-    truncated = truncated.rstrip().rstrip(",")
-    # Close the array
-    if not truncated.endswith("]"):
-        truncated += "\n]"
-    return truncated
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy: find the last complete '}, {' boundary and close the array
+    # Walk backwards to find the last complete JSON object
+    last_brace = text.rfind("}")
+    while last_brace > 0:
+        candidate = text[: last_brace + 1].rstrip().rstrip(",") + "\n]"
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            last_brace = text.rfind("}", 0, last_brace)
+
+    return text
 
 
 def _build_global_context(definitions: list[str]) -> str:
@@ -159,7 +168,7 @@ def extract_rules(
     stop_reason = None
     with client.messages.stream(
         model=MODEL,
-        max_tokens=16384,
+        max_tokens=32768,
         messages=[{"role": "user", "content": prompt}],
     ) as stream:
         for text in stream.text_stream:
@@ -168,9 +177,8 @@ def extract_rules(
 
     raw_text = _strip_json_fences(raw_text)
 
-    # If response was truncated, try to salvage valid JSON
-    if stop_reason == "max_tokens":
-        raw_text = _repair_truncated_json(raw_text)
+    # Always attempt repair — handles truncation, trailing commas, etc.
+    raw_text = _repair_truncated_json(raw_text)
 
     rules_data = json.loads(raw_text)
 
