@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pdfplumber
+python-docx
+anthropic
+openpyxl
+python-multipart
+pydantic

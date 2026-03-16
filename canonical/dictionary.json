@@ -1,0 +1,43 @@
+{
+  "version": "1.0",
+  "description": "Canonical field dictionary — maps lender-specific terminology to standardised field names. See PRD Section 7.5.",
+  "categories": {
+    "ltv": {"description": "Max loan as % of property value", "aliases": ["LTV", "Loan to Value", "loan-to-value", "loan-to-value ratio"]},
+    "income": {"description": "Minimum/maximum income thresholds", "aliases": ["Income", "Salary", "Earnings", "Remuneration"]},
+    "employment": {"description": "Employment types and evidence requirements", "aliases": ["Self-Employed", "Sole Trader", "Contractor", "Ltd Co Director"]},
+    "credit": {"description": "Credit impairment thresholds and lookback periods", "aliases": ["CCJs", "Defaults", "Bankruptcy", "IVA", "Arrears"]},
+    "property": {"description": "Acceptable property characteristics", "aliases": ["Property Type", "Construction", "Tenure", "EPC", "New Build", "HMO", "MUFB"]},
+    "affordability": {"description": "Affordability assessment rules", "aliases": ["Stress Test", "DTI", "Income Multiple", "Debt to Income"]},
+    "applicant": {"description": "Applicant eligibility criteria", "aliases": ["Age", "Residency", "Nationality", "Visa", "Number of Applicants"]},
+    "loan": {"description": "Loan structure and size rules", "aliases": ["Loan Size", "Term", "Repayment Type", "Interest Only", "Capital Raising"]}
+  },
+  "fields": {
+    "max_ltv": {"canonical": "maximum_loan_to_value", "category": "ltv", "type": "numeric", "unit": "%"},
+    "max_ltv_btl": {"canonical": "maximum_ltv_buy_to_let", "category": "ltv", "type": "numeric", "unit": "%"},
+    "max_ltv_new_build": {"canonical": "maximum_ltv_new_build", "category": "ltv", "type": "numeric", "unit": "%"},
+    "max_ltv_hmo": {"canonical": "maximum_ltv_hmo", "category": "ltv", "type": "numeric", "unit": "%"},
+    "max_ltv_interest_only": {"canonical": "maximum_ltv_interest_only", "category": "ltv", "type": "numeric", "unit": "%"},
+    "max_loan_amount": {"canonical": "maximum_loan_amount", "category": "ltv", "type": "numeric", "unit": "£"},
+    "min_income_single": {"canonical": "minimum_gross_income_single", "category": "income", "type": "numeric", "unit": "£"},
+    "min_income_joint": {"canonical": "minimum_gross_income_joint", "category": "income", "type": "numeric", "unit": "£"},
+    "max_income_multiple_single": {"canonical": "maximum_income_multiple_single", "category": "income", "type": "numeric", "unit": "x"},
+    "max_income_multiple_joint": {"canonical": "maximum_income_multiple_joint", "category": "income", "type": "numeric", "unit": "x"},
+    "min_employment_tenure": {"canonical": "minimum_employment_tenure_months", "category": "employment", "type": "numeric", "unit": "months"},
+    "self_employed_trading_history": {"canonical": "minimum_self_employed_trading_years", "category": "employment", "type": "numeric", "unit": "years"},
+    "contractor_min_history": {"canonical": "minimum_contractor_history_months", "category": "employment", "type": "numeric", "unit": "months"},
+    "min_credit_score": {"canonical": "minimum_credit_score", "category": "credit", "type": "numeric", "unit": null},
+    "ccj_lookback": {"canonical": "ccj_lookback_years", "category": "credit", "type": "numeric", "unit": "years"},
+    "bankruptcy_lookback": {"canonical": "bankruptcy_lookback_years", "category": "credit", "type": "numeric", "unit": "years"},
+    "max_unsecured_debt_ratio": {"canonical": "maximum_unsecured_debt_to_income", "category": "credit", "type": "numeric", "unit": "%"},
+    "min_property_value": {"canonical": "minimum_property_value", "category": "property", "type": "numeric", "unit": "£"},
+    "min_lease_term": {"canonical": "minimum_unexpired_lease_years", "category": "property", "type": "numeric", "unit": "years"},
+    "min_epc_rating": {"canonical": "minimum_epc_rating", "category": "property", "type": "string", "unit": null},
+    "stress_test_rate": {"canonical": "affordability_stress_test_rate", "category": "affordability", "type": "string", "unit": "%"},
+    "max_dti_ratio": {"canonical": "maximum_debt_to_income_ratio", "category": "affordability", "type": "numeric", "unit": "%"},
+    "min_age": {"canonical": "minimum_applicant_age", "category": "applicant", "type": "numeric", "unit": "years"},
+    "max_age_at_term_end": {"canonical": "maximum_age_at_term_end", "category": "applicant", "type": "numeric", "unit": "years"},
+    "max_applicants": {"canonical": "maximum_applicants_per_application", "category": "applicant", "type": "numeric", "unit": null},
+    "min_term": {"canonical": "minimum_mortgage_term_years", "category": "loan", "type": "numeric", "unit": "years"},
+    "max_term": {"canonical": "maximum_mortgage_term_years", "category": "loan", "type": "numeric", "unit": "years"}
+  }
+}
