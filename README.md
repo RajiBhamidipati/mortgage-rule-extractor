@@ -320,18 +320,198 @@ Rules are matched between the golden dataset and extracted rules by `(category, 
 
 ### Golden Dataset
 
-The reference golden dataset contains 31 hand-verified rules across all 8 categories:
+The reference golden dataset contains 31 hand-verified rules across all 8 categories. Each rule was manually extracted from the reference document (`residential_criteria.pdf`) and verified for accuracy.
 
-| Category | Golden Rules | Examples |
-|----------|-------------|----------|
-| LTV | 7 | max_ltv (95%), max_ltv_btl (80%), max_ltv_new_build (85%) |
-| Income | 4 | min_income_single (£25,000), max_income_multiple (4.5x) |
-| Employment | 5 | min_tenure (6 months), self_employed_history (2 years) |
-| Credit | 4 | min_credit_score (620), ccj_lookback (6 years) |
-| Property | 3 | min_value (£75,000), min_lease_term (70 years) |
-| Affordability | 2 | stress_test_rate (3%), max_dti_ratio (45%) |
-| Applicant | 3 | min_age (18), max_age_at_term_end (75) |
-| Loan | 3 | min_term (5 years), max_term (35 years) |
+<details>
+<summary><strong>Full Golden Dataset (31 rules)</strong></summary>
+
+#### LTV Rules (7)
+
+| Rule ID | Field | Operator | Value | Conditions | Outcome | NL Statement |
+|---------|-------|----------|-------|------------|---------|-------------|
+| G-LTV-001 | max_ltv | <= | 95% | residential | PASS | Maximum LTV for standard residential mortgages is 95% |
+| G-LTV-002 | max_ltv_btl | <= | 75% | buy_to_let | PASS | Maximum LTV for buy-to-let mortgages is 75% |
+| G-LTV-003 | pmi_required | >= | 90% | ltv_above: 90% | REFER | Private mortgage insurance is required when LTV exceeds 90% |
+| G-LTV-004 | max_ltv_new_build | <= | 85% | new_build | PASS | New build properties have a maximum LTV of 85% |
+| G-LTV-005 | max_ltv_hmo | <= | 70% | HMO | PASS | Maximum LTV for HMOs is 70% |
+| G-LTV-006 | max_loan_amount | <= | £2,000,000 | — | PASS | Maximum loan amount is £2,000,000 |
+| G-LTV-007 | high_value_approval | >= | £1,000,000 | — | REFER | Loans above £1,000,000 require Senior Underwriter approval |
+
+#### Income Rules (4)
+
+| Rule ID | Field | Operator | Value | Conditions | Outcome | NL Statement |
+|---------|-------|----------|-------|------------|---------|-------------|
+| G-INC-001 | min_income_single | >= | £25,000 | single applicant | PASS | Minimum gross annual income for single applicant is £25,000 |
+| G-INC-002 | min_income_joint | >= | £30,000 | joint applicant | PASS | Minimum combined gross annual income for joint application is £30,000 |
+| G-INC-003 | max_income_multiple_single | <= | 4.5x | single applicant | PASS | Maximum income multiple for single applicants is 4.5x gross annual income |
+| G-INC-004 | max_income_multiple_joint | <= | 3.75x | joint applicant | PASS | Maximum income multiple for joint applicants is 3.75x combined gross income |
+
+#### Employment Rules (5)
+
+| Rule ID | Field | Operator | Value | Conditions | Outcome | NL Statement |
+|---------|-------|----------|-------|------------|---------|-------------|
+| G-EMP-001 | min_employment_tenure | >= | 6 months | permanent | PASS | Permanent employees must have minimum 6 months with current employer |
+| G-EMP-002 | probation_accepted | == | false | — | DECLINE | Applicants in probationary period are not accepted |
+| G-EMP-003 | self_employed_trading_history | >= | 2 years | self_employed | PASS | Self-employed applicants must have minimum 2 years trading history |
+| G-EMP-004 | contractor_min_history | >= | 12 months | contractor | PASS | Contract workers must have minimum 12 months continuous contracting history |
+| G-EMP-005 | zero_hours_accepted | == | false | — | DECLINE | Zero-hours contract workers are not accepted |
+
+#### Credit Rules (4)
+
+| Rule ID | Field | Operator | Value | Conditions | Outcome | NL Statement |
+|---------|-------|----------|-------|------------|---------|-------------|
+| G-CRD-001 | min_credit_score | >= | 620 | Experian | PASS | Minimum credit score is 620 (Experian) |
+| G-CRD-002 | ccj_lookback | == | 0 | 6 year lookback | PASS | No CCJs accepted within the last 6 years |
+| G-CRD-003 | bankruptcy_lookback | == | 0 | 6 year lookback | PASS | No bankruptcy, IVAs, or Debt Relief Orders within the last 6 years |
+| G-CRD-004 | max_unsecured_debt_ratio | <= | 15% | — | PASS | Total unsecured debt must not exceed 15% of gross annual income |
+
+#### Property Rules (3)
+
+| Rule ID | Field | Operator | Value | Conditions | Outcome | NL Statement |
+|---------|-------|----------|-------|------------|---------|-------------|
+| G-PROP-001 | min_property_value | >= | £75,000 | — | PASS | Minimum property value is £75,000 |
+| G-PROP-002 | min_lease_term | >= | 70 years | leasehold | PASS | Leasehold properties must have minimum 70 years unexpired lease |
+| G-PROP-003 | min_epc_rating | >= | E | residential | PASS | Minimum EPC rating is E for residential properties |
+
+#### Affordability Rules (2)
+
+| Rule ID | Field | Operator | Value | Conditions | Outcome | NL Statement |
+|---------|-------|----------|-------|------------|---------|-------------|
+| G-AFF-001 | stress_test_rate | >= | SVR+3% or 7% | — | PASS | Stress test at SVR + 3% or 7%, whichever is higher |
+| G-AFF-002 | max_dti_ratio | <= | 45% | — | PASS | Maximum debt-to-income ratio is 45% |
+
+#### Applicant Rules (3)
+
+| Rule ID | Field | Operator | Value | Conditions | Outcome | NL Statement |
+|---------|-------|----------|-------|------------|---------|-------------|
+| G-APP-001 | min_age | >= | 18 years | — | PASS | Minimum applicant age is 18 |
+| G-APP-002 | max_age_at_term_end | <= | 70 years | standard product | PASS | Maximum age at end of mortgage term is 70 for standard products |
+| G-APP-003 | max_applicants | <= | 2 | — | PASS | Maximum 2 applicants per application |
+
+#### Loan Rules (3)
+
+| Rule ID | Field | Operator | Value | Conditions | Outcome | NL Statement |
+|---------|-------|----------|-------|------------|---------|-------------|
+| G-LOAN-001 | min_term | >= | 5 years | — | PASS | Minimum mortgage term is 5 years |
+| G-LOAN-002 | max_term | <= | 35 years | — | PASS | Maximum mortgage term is 35 years |
+| G-LOAN-003 | max_ltv_interest_only | <= | 50% | interest_only | PASS | Interest-only mortgages have maximum LTV of 50% |
+
+</details>
+
+### POC Evaluation Results
+
+The first evaluation run against the reference document (`residential_criteria.pdf`, 16 sections, 47,527 chars) produced the following results:
+
+| Metric | Result | Target | Status |
+|--------|--------|--------|--------|
+| **Precision** | 4.8% | ≥ 80% | Below target |
+| **Recall** | 6.5% | ≥ 80% | Below target |
+| **F1 Score** | 5.5% | ≥ 80% | Below target |
+| **Source Fidelity** | 86.2% | ≥ 90% | Near target |
+| **Classification Accuracy** | 100% | — | Strong |
+| **EQS** | 41.3 | ≥ 80 | RED |
+
+**Summary:** 58 rules extracted, 31 in golden set. 2 true positives, 40 false positives, 29 false negatives.
+
+#### Analysis
+
+**What went well:**
+- **Source Fidelity (86.2%)** — The AI is grounding its extractions in real document text. Most source quotes were verified.
+- **Classification Accuracy (100%)** — The 2 matched rules were categorised correctly. The classification validator guardrail is working.
+
+**What needs improvement:**
+- **Low recall (6.5%)** — The AI extracted rules using different field names than the golden dataset expects. For example, the AI produced `applicant:minimum_age` while the golden set expects `applicant:min_age`. The matching is by exact `(category, field)` tuple — synonymous field names don't match.
+- **High false positives (40)** — The AI extracted many valid rules that aren't in the golden dataset (e.g., deposit rules, concessionary purchase rules, repayment strategies). These are real rules in the document — the golden dataset is incomplete, not the extraction.
+- **Field name normalisation** — The canonical dictionary mapping needs to run before evaluation so that `minimum_age` → `min_age`, `maximum_term` → `max_term`, etc.
+
+<details>
+<summary><strong>Missed Rules (29 false negatives)</strong></summary>
+
+These golden rules were not matched in the extraction output:
+
+| Category | Field |
+|----------|-------|
+| affordability | max_dti_ratio |
+| affordability | stress_test_rate |
+| applicant | max_age_at_term_end |
+| applicant | min_age |
+| credit | bankruptcy_lookback |
+| credit | ccj_lookback |
+| credit | max_unsecured_debt_ratio |
+| credit | min_credit_score |
+| employment | contractor_min_history |
+| employment | min_employment_tenure |
+| employment | probation_accepted |
+| employment | self_employed_trading_history |
+| employment | zero_hours_accepted |
+| income | max_income_multiple_joint |
+| income | max_income_multiple_single |
+| income | min_income_joint |
+| income | min_income_single |
+| loan | max_ltv_interest_only |
+| loan | max_term |
+| loan | min_term |
+| ltv | high_value_approval |
+| ltv | max_loan_amount |
+| ltv | max_ltv_btl |
+| ltv | max_ltv_hmo |
+| ltv | max_ltv_new_build |
+| ltv | pmi_required |
+| property | min_epc_rating |
+| property | min_lease_term |
+| property | min_property_value |
+
+</details>
+
+<details>
+<summary><strong>Extra Rules (40 false positives)</strong></summary>
+
+These rules were extracted by the AI but have no match in the golden dataset. Most are valid rules — they indicate the golden dataset needs expanding:
+
+| Category | Field |
+|----------|-------|
+| applicant | diplomatic_immunity |
+| applicant | employment_type_commission_only |
+| applicant | employment_type_seasonal |
+| applicant | eu_eea_national_residency_status |
+| applicant | married_cohabiting_application_type |
+| applicant | maximum_age_at_end_of_term |
+| applicant | maximum_age_at_end_of_term_older_joint_applicant |
+| applicant | minimum_age |
+| applicant | other_occupants_adult_occupier_form |
+| applicant | power_of_attorney |
+| applicant | rest_of_world_national_residency_status |
+| applicant | uk_expatriate |
+| applicant | uk_residency_period |
+| income | general_employment_requirement |
+| loan | builder_gifted_deposit_max_incentive |
+| loan | concessionary_purchase_eligible_relationship |
+| loan | concessionary_purchase_landlord_tenant_minimum_tenancy |
+| loan | concessionary_purchase_level3_deposit |
+| loan | concessionary_purchase_max_discount_inter_family |
+| loan | concessionary_purchase_max_discount_landlord_tenant |
+| loan | deposit_source_applicant_own_funds |
+| loan | excluded_loan_purposes |
+| loan | fees_addition_net_ltv |
+| loan | gifted_deposit_eligible_donor |
+| loan | gross_loan_ltv |
+| loan | house_builder_monetary_incentives_max |
+| loan | house_builder_non_monetary_incentives |
+| loan | interest_only_downsizing_equity |
+| loan | interest_only_foreign_currency_repayment_strategy |
+| loan | interest_only_repayment_strategy |
+| loan | loan_purpose |
+| loan | maximum_loan_amount |
+| loan | maximum_term |
+| loan | minimum_loan |
+| loan | minimum_term |
+| loan | property_owned_period_for_remortgage |
+| loan | purchase_transaction_prior_sale_period |
+| loan | remortgage_capital_raising_purpose |
+| loan | repayment_type |
+| loan | seller_ownership_period |
+
+</details>
 
 ---
 
