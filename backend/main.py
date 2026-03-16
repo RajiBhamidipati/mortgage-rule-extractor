@@ -138,6 +138,7 @@ async def extract(doc_id: str):
             doc_name=session.doc_name,
             doc_id=doc_id,
             definitions=definitions,
+            parsed_doc=parsed_doc,
         )
     except Exception as e:
         raise HTTPException(500, f"Extraction failed: {e}")
