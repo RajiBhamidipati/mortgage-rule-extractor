@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, PlainTextResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 # Load .env from project root
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -38,9 +39,10 @@ app = FastAPI(
     description="AI-powered extraction of structured lending rules from policy documents. EU AI Act HIGH RISK.",
 )
 
+cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -387,3 +389,10 @@ def _get_session(doc_id: str) -> SessionState:
     if doc_id not in sessions:
         raise HTTPException(404, f"Document {doc_id} not found. Upload a document first.")
     return sessions[doc_id]
+
+
+# ── Serve frontend static build (production) ──
+
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
