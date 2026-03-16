@@ -35,15 +35,15 @@ The system follows a five-stage pipeline. Each stage is triggered explicitly by 
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        RULE EXTRACTION (Claude)                         │
+│                  RULE EXTRACTION (Claude — Parallel Chunked)             │
 │                                                                         │
-│   Parsed Text + Global Context ──► Claude Sonnet 4.6 ──► JSON Rules    │
+│   Each section ──► Claude Sonnet 4.6 (up to 8 in parallel) ──► JSON   │
 │                                                                         │
-│   • Structured prompt enforces consistent output schema                 │
+│   • Canonical field vocabulary enforced (30 standardised field names)   │
 │   • Every rule requires a verbatim source_quote from the document       │
+│   • Boilerplate sections (TOC, glossary, disclaimers) auto-skipped     │
+│   • Post-extraction: field normalisation → de-duplication → renumber   │
 │   • Ambiguous language ("typically", "may") → outcome: REFER            │
-│   • Table rows → individual rules with conditions                       │
-│   • Rule hierarchy: general rules vs specific exceptions                │
 └────────────────────────────────┬────────────────────────────────────────┘
                                  │
                                  ▼
@@ -95,17 +95,20 @@ The system follows a five-stage pipeline. Each stage is triggered explicitly by 
                            ▼
                     ┌──────────────┐         ┌──────────────────┐
                     │   FastAPI    │────────►│   Claude API     │
-                    │  port 8000   │◄────────│  (Sonnet 4.6)    │
-                    └──────┬───────┘         └──────────────────┘
+                    │  port 8000   │◄────────│  Sonnet 4.6      │
+                    └──────┬───────┘         │  (extraction)    │
+                           │                 │  Haiku 4.5       │
+                           │                 │  (classification)│
+              ┌────────────┼────────────┐    └──────────────────┘
                            │
               ┌────────────┼────────────┐
               ▼            ▼            ▼
         ┌──────────┐ ┌──────────┐ ┌──────────┐
         │ parser.py│ │extractor │ │guardrails│
         │          │ │   .py    │ │   .py    │
-        │pdfplumber│ │  Claude  │ │ 5 checks │
-        │python-doc│ │ prompt + │ │ + Claude │
-        │          │ │ streaming│ │ 2nd pass │
+        │pdfplumber│ │ parallel │ │ 5 checks │
+        │python-doc│ │ chunked  │ │ + Haiku  │
+        │          │ │ 8 workers│ │ classifr │
         └──────────┘ └──────────┘ └──────────┘
               │            │            │
               ▼            ▼            ▼
@@ -135,11 +138,27 @@ The system follows a five-stage pipeline. Each stage is triggered explicitly by 
 |-------|-----------|
 | Frontend | React 19, Vite 7, Tailwind CSS 4, Lucide icons |
 | Backend | Python 3, FastAPI, Uvicorn |
-| AI | Claude Sonnet 4.6 via Anthropic SDK (streaming) |
+| AI (extraction) | Claude Sonnet 4.6 via Anthropic SDK (parallel streaming) |
+| AI (classification) | Claude Haiku 4.5 (lightweight guardrail validation) |
 | PDF parsing | pdfplumber |
 | Word parsing | python-docx |
 | Excel export | openpyxl |
 | Storage | In-memory (session-based, no database) |
+| Deployment | Railway (Docker, single-service) |
+
+### Extraction Strategy: Parallel Chunked
+
+Rather than sending the entire document to Claude in one API call (which causes token-limit truncation on large documents), the system:
+
+1. **Splits** the document into its parsed sections
+2. **Filters** out boilerplate sections (TOC, glossary, disclaimers, appendix)
+3. **Sends** each section to Claude in parallel (up to 8 concurrent workers)
+4. **Constrains** output to a canonical field vocabulary (30 standardised field names loaded from `canonical/dictionary.json`)
+5. **Normalises** extracted field names post-extraction (e.g., `maximum_loan_to_value` → `max_ltv`)
+6. **De-duplicates** rules on `(category, field, value, conditions)`
+7. **Renumbers** rule IDs sequentially by category
+
+This approach eliminates JSON truncation, improves extraction quality (focused context per section), and reduces wall-clock time by ~4x compared to sequential processing.
 
 ---
 
@@ -232,14 +251,15 @@ Guardrails are automated validation checks that run after extraction and before 
 
 ### 3. Classification Validator
 
-**What it does:** A second Claude pass reviews every rule's category assignment.
+**What it does:** A second AI pass reviews every rule's category assignment.
 
 **Why it matters:** A rule about "maximum age at end of mortgage term" could be classified as `applicant` or `loan`. Misclassification breaks downstream decision logic.
 
 **How it works:**
-- Sends compact rule summaries (ID, category, field, NL statement) to Claude
-- Claude returns: `is_correct`, `suggested_category`, `reason` for each rule
+- Sends compact rule summaries (ID, category, field, NL statement) to Claude Haiku 4.5 (fast, lightweight model)
+- Haiku returns: `is_correct`, `suggested_category`, `reason` for each rule
 - Disagreements are flagged, not auto-corrected — the human reviewer decides
+- Uses Haiku instead of Sonnet because this is a simple yes/no classification task (3-5x faster, 10-20x cheaper)
 
 **Flag type:** `MISCLASSIFIED_CANDIDATE` — "Category 'ltv' may be 'loan': [reason]"
 
