@@ -49,8 +49,8 @@ def _build_canonical_field_list() -> str:
     if not fields:
         return ""
     lines = [
-        "## CANONICAL FIELD NAMES (MANDATORY)",
-        "You MUST use one of these exact field names in the \"field\" property when a match exists. Do NOT invent your own field names.",
+        "## PREFERRED FIELD NAMES",
+        "When a rule matches one of these fields, use the exact name below. For rules that do NOT match any listed field, create a descriptive snake_case name (e.g. deposit_source, residency_period).",
         "",
     ]
     # Group by category
@@ -65,7 +65,7 @@ def _build_canonical_field_list() -> str:
         lines.extend(sorted(by_cat[cat]))
         lines.append("")
 
-    lines.append("If no canonical field name fits, use the closest match prefixed with the category (e.g. loan:deposit_source).")
+    lines.append("IMPORTANT: Still extract ALL rules even if no field name above matches. Use a descriptive snake_case name for any rule not covered above.")
     return "\n".join(lines)
 
 
@@ -73,16 +73,21 @@ CANONICAL_FIELDS_BLOCK = _build_canonical_field_list()
 
 # ── Boilerplate section detection (shared with guardrails) ──
 
-BOILERPLATE_HEADINGS = [
-    "table of contents", "contents", "introduction", "appendix",
-    "definitions", "glossary", "version history", "change log",
+BOILERPLATE_HEADINGS_EXACT = {
+    "table of contents", "contents", "version history", "change log",
     "document control", "disclaimer",
+}
+
+BOILERPLATE_HEADINGS_STARTSWITH = [
+    "appendix",
 ]
 
 
 def _is_boilerplate_section(heading: str) -> bool:
-    lower = heading.lower()
-    return any(bp in lower for bp in BOILERPLATE_HEADINGS)
+    lower = heading.lower().strip()
+    if lower in BOILERPLATE_HEADINGS_EXACT:
+        return True
+    return any(lower.startswith(bp) for bp in BOILERPLATE_HEADINGS_STARTSWITH)
 
 
 # ── Prompt template (trimmed for token efficiency) ──
