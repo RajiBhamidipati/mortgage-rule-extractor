@@ -10,6 +10,7 @@ Implements PRD F-05 through F-08c.
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import anthropic
@@ -279,48 +280,47 @@ def extract_rules(
 
     sections = parsed_doc.sections if parsed_doc else []
 
-    # ── Chunked extraction: one section at a time ──
+    # ── Chunked extraction: parallel across sections ──
     all_rule_dicts: list[dict] = []
-    extracted_rules: list[ExtractedRule] = []  # For passing as context to next section
 
     if sections:
-        for i, section in enumerate(sections):
+        # Filter to sections worth processing
+        viable_sections = [
+            s for s in sections
+            if len((s.text + " ".join(s.tables if s.tables else [])).strip()) >= 50
+        ]
+        print(f"Extracting from {len(viable_sections)} sections (of {len(sections)} total) in parallel...")
+
+        max_workers = min(4, len(viable_sections))  # Cap at 4 concurrent API calls
+
+        def _extract_with_index(args):
+            idx, section = args
             heading = section.section_heading or "Untitled"
-            print(f"[{i+1}/{len(sections)}] Extracting from: {heading} ({section.char_count} chars)")
-
+            print(f"[{idx+1}/{len(viable_sections)}] Starting: {heading} ({section.char_count} chars)")
             try:
-                section_rules = _extract_section(section, global_context, extracted_rules)
+                rules = _extract_section(section, global_context, [])
+                print(f"[{idx+1}/{len(viable_sections)}] Done: {heading} → {len(rules)} rules")
+                return rules
             except Exception as e:
-                print(f"Warning: extraction failed for section '{heading}': {e}")
-                section_rules = []
+                print(f"[{idx+1}/{len(viable_sections)}] Failed: {heading} — {e}")
+                return []
 
-            if section_rules:
-                all_rule_dicts.extend(section_rules)
-                # Build temporary ExtractedRule objects for context passing
-                for r in section_rules:
-                    try:
-                        r.setdefault("policy_doc_id", doc_id)
-                        r.setdefault("doc_name", doc_name)
-                        r.setdefault("version", "1.0")
-                        r.setdefault("status", "pending_review")
-                        r.setdefault("guardrail_flags", [])
-                        r.setdefault("rule_scope", "general")
-                        r.setdefault("unit", None)
-                        r.setdefault("conditions", None)
-                        r.setdefault("failure_outcome", None)
-                        r.setdefault("source_page", None)
-                        r.setdefault("condition_logic", None)
-                        r.setdefault("precedence", 1)
-                        r.setdefault("overrides_rule_id", None)
-                        r.setdefault("footnote_ref", None)
-                        extracted_rules.append(ExtractedRule(**{
-                            **r,
-                            "guardrail_flags": [],
-                        }))
-                    except Exception:
-                        pass
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_extract_with_index, (i, s)): i
+                for i, s in enumerate(viable_sections)
+            }
+            # Collect results in original section order
+            results_by_index: dict[int, list[dict]] = {}
+            for future in as_completed(futures):
+                idx = futures[future]
+                results_by_index[idx] = future.result()
 
-            print(f"  → {len(section_rules)} rules found")
+            # Merge in section order
+            for idx in sorted(results_by_index):
+                all_rule_dicts.extend(results_by_index[idx])
+
+        print(f"Total rules before de-duplication: {len(all_rule_dicts)}")
     else:
         # Fallback: single-pass extraction (original behaviour)
         prompt = SECTION_PROMPT.format(
