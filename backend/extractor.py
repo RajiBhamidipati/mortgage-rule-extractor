@@ -1,12 +1,16 @@
-"""Rule extraction using Claude API.
+"""Rule extraction using Claude API — chunked by section.
 
-Sends parsed document text to Claude with a structured extraction prompt
-and returns a list of ExtractedRule objects. Implements PRD F-05 through F-08c.
+Sends each document section to Claude individually with global context,
+then merges and de-duplicates results. This avoids token-limit truncation
+on large documents and improves extraction quality.
+
+Implements PRD F-05 through F-08c.
 """
 
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import anthropic
@@ -15,18 +19,21 @@ from schema import (
     ExtractedRule, ExtractionResult, GuardrailFlag,
     RuleCategory, RuleStatus, RuleScope,
 )
+from parser import ParsedDocument, ParsedSection
 
 client = anthropic.Anthropic()  # Uses ANTHROPIC_API_KEY env var
 
 MODEL = "claude-sonnet-4-6"
 
-EXTRACTION_PROMPT = """You are a mortgage lending policy analyst specialising in extracting structured rules from lender criteria documents.
+SECTION_PROMPT = """You are a mortgage lending policy analyst specialising in extracting structured rules from lender criteria documents.
 
 ## TASK
-Extract ALL lending rules from the document text below. Be exhaustive — every threshold, limit, condition, requirement, and eligibility criterion is a rule.
+Extract ALL lending rules from the SECTION TEXT below. Be exhaustive — every threshold, limit, condition, requirement, and eligibility criterion is a rule.
 
 ## GLOBAL CONTEXT
 {global_context}
+
+{prior_rules_context}
 
 ## OUTPUT FORMAT
 Return a JSON array. Each element must have ALL of these fields:
@@ -43,7 +50,7 @@ Return a JSON array. Each element must have ALL of these fields:
   "outcome": "string — PASS, REFER, or DECLINE",
   "failure_outcome": "string — REFER or DECLINE",
   "nl_statement": "string — clear English rule statement",
-  "source_quote": "string — EXACT VERBATIM text from the document. Copy word-for-word. Do not paraphrase.",
+  "source_quote": "string — EXACT VERBATIM text from the section. Copy word-for-word. Do not paraphrase.",
   "source_section": "string — section heading this rule appears under",
   "source_page": "integer or null",
   "condition_logic": "string or null — full IF/THEN expression, e.g. IF property_type == 'HMO' THEN max_ltv = 70%",
@@ -56,7 +63,7 @@ Return a JSON array. Each element must have ALL of these fields:
 
 ## CRITICAL INSTRUCTIONS
 
-1. **EVERY rule must have a verbatim source_quote** copied exactly from the document. This is non-negotiable.
+1. **EVERY rule must have a verbatim source_quote** copied exactly from the section text. This is non-negotiable.
 
 2. **Rule scope classification (F-08b):** When multiple rules apply to the same field (e.g. LTV):
    - The broadest rule is scope: "general" with lower precedence
@@ -74,8 +81,10 @@ Return a JSON array. Each element must have ALL of these fields:
 
 6. **Tables:** Treat each row of a criteria table as a separate rule unless rows are clearly sub-conditions of a single rule.
 
-## DOCUMENT TEXT
-{document_text}
+7. **If this section contains no extractable rules**, return an empty array: []
+
+## SECTION: {section_heading}
+{section_text}
 
 Return ONLY the JSON array. No markdown fences, no explanation, no commentary."""
 
@@ -129,6 +138,22 @@ def _build_global_context(definitions: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _build_prior_rules_context(prior_rules: list[ExtractedRule]) -> str:
+    """Build context about rules already extracted from previous sections."""
+    if not prior_rules:
+        return ""
+    summaries = []
+    for r in prior_rules:
+        summaries.append(f"  - {r.rule_id}: {r.nl_statement} (category: {r.category}, field: {r.field})")
+    lines = [
+        "## RULES ALREADY EXTRACTED FROM PREVIOUS SECTIONS",
+        "The following rules have already been extracted. Do NOT duplicate them.",
+        "If this section contains exceptions or overrides to these rules, use overrides_rule_id to link them.",
+        "",
+    ] + summaries
+    return "\n".join(lines)
+
+
 def _category_prefix(category: str) -> str:
     """Return the ID prefix for a rule category."""
     prefixes = {
@@ -139,52 +164,191 @@ def _category_prefix(category: str) -> str:
     return prefixes.get(category, "RULE")
 
 
+def _extract_section(
+    section: ParsedSection,
+    global_context: str,
+    prior_rules: list[ExtractedRule],
+) -> list[dict]:
+    """Extract rules from a single document section via Claude API.
+
+    Returns raw rule dicts (not yet converted to ExtractedRule).
+    """
+    section_text = section.text
+    if section.tables:
+        section_text += "\n\n" + "\n".join(section.tables)
+
+    # Skip very short sections unlikely to contain rules
+    if len(section_text.strip()) < 50:
+        return []
+
+    heading = section.section_heading or "Untitled Section"
+    prior_context = _build_prior_rules_context(prior_rules)
+
+    prompt = SECTION_PROMPT.format(
+        global_context=global_context,
+        prior_rules_context=prior_context,
+        section_heading=heading,
+        section_text=section_text,
+    )
+
+    # Use streaming for long requests
+    raw_text = ""
+    with client.messages.stream(
+        model=MODEL,
+        max_tokens=8192,
+        messages=[{"role": "user", "content": prompt}],
+    ) as stream:
+        for text in stream.text_stream:
+            raw_text += text
+
+    raw_text = _strip_json_fences(raw_text)
+    raw_text = _repair_truncated_json(raw_text)
+
+    try:
+        rules_data = json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        print(f"Warning: failed to parse JSON for section '{heading}': {e}")
+        return []
+
+    if not isinstance(rules_data, list):
+        return []
+
+    # Inject section metadata
+    for r in rules_data:
+        if section.page is not None and not r.get("source_page"):
+            r["source_page"] = section.page
+        if not r.get("source_section"):
+            r["source_section"] = heading
+
+    return rules_data
+
+
+def _deduplicate_rules(all_rule_dicts: list[dict]) -> list[dict]:
+    """Remove duplicate rules based on (category, field, value) tuple."""
+    seen = set()
+    unique = []
+    for r in all_rule_dicts:
+        key = (
+            r.get("category", "").lower(),
+            r.get("field", "").lower(),
+            str(r.get("value", "")).lower(),
+            str(r.get("conditions", "")).lower(),
+        )
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+        else:
+            print(f"De-duplicated: {r.get('rule_id', '?')} ({key[0]}:{key[1]}={key[2]})")
+    return unique
+
+
+def _renumber_rules(rule_dicts: list[dict]) -> list[dict]:
+    """Re-assign sequential rule IDs grouped by category."""
+    counters: dict[str, int] = {}
+    for r in rule_dicts:
+        cat = r.get("category", "unknown").lower()
+        prefix = _category_prefix(cat)
+        counters.setdefault(cat, 0)
+        counters[cat] += 1
+        r["rule_id"] = f"{prefix}_{counters[cat]:03d}"
+    return rule_dicts
+
+
 def extract_rules(
     full_text: str,
     doc_name: str,
     doc_id: str,
     definitions: list[str] | None = None,
+    parsed_doc: ParsedDocument | None = None,
 ) -> ExtractionResult:
     """Extract rules from document text using Claude API.
 
+    If parsed_doc is provided, uses chunked extraction (one section at a time).
+    Otherwise falls back to single-pass extraction on full_text.
+
     Args:
-        full_text: Complete document text
+        full_text: Complete document text (used as fallback)
         doc_name: Source filename
         doc_id: Unique document identifier
         definitions: Global context definitions (F-03)
+        parsed_doc: Parsed document with sections (for chunked extraction)
 
     Returns:
         ExtractionResult with list of ExtractedRule objects
     """
     global_context = _build_global_context(definitions or [])
 
-    prompt = EXTRACTION_PROMPT.format(
-        global_context=global_context,
-        document_text=full_text,
-    )
+    sections = parsed_doc.sections if parsed_doc else []
 
-    # Use streaming for long requests (required by Anthropic API for >10min ops)
-    raw_text = ""
-    stop_reason = None
-    with client.messages.stream(
-        model=MODEL,
-        max_tokens=32768,
-        messages=[{"role": "user", "content": prompt}],
-    ) as stream:
-        for text in stream.text_stream:
-            raw_text += text
-        stop_reason = stream.get_final_message().stop_reason
+    # ── Chunked extraction: parallel across sections ──
+    all_rule_dicts: list[dict] = []
 
-    raw_text = _strip_json_fences(raw_text)
+    if sections:
+        # Filter to sections worth processing
+        viable_sections = [
+            s for s in sections
+            if len((s.text + " ".join(s.tables if s.tables else [])).strip()) >= 50
+        ]
+        print(f"Extracting from {len(viable_sections)} sections (of {len(sections)} total) in parallel...")
 
-    # Always attempt repair — handles truncation, trailing commas, etc.
-    raw_text = _repair_truncated_json(raw_text)
+        max_workers = min(4, len(viable_sections))  # Cap at 4 concurrent API calls
 
-    rules_data = json.loads(raw_text)
+        def _extract_with_index(args):
+            idx, section = args
+            heading = section.section_heading or "Untitled"
+            print(f"[{idx+1}/{len(viable_sections)}] Starting: {heading} ({section.char_count} chars)")
+            try:
+                rules = _extract_section(section, global_context, [])
+                print(f"[{idx+1}/{len(viable_sections)}] Done: {heading} → {len(rules)} rules")
+                return rules
+            except Exception as e:
+                print(f"[{idx+1}/{len(viable_sections)}] Failed: {heading} — {e}")
+                return []
 
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_extract_with_index, (i, s)): i
+                for i, s in enumerate(viable_sections)
+            }
+            # Collect results in original section order
+            results_by_index: dict[int, list[dict]] = {}
+            for future in as_completed(futures):
+                idx = futures[future]
+                results_by_index[idx] = future.result()
+
+            # Merge in section order
+            for idx in sorted(results_by_index):
+                all_rule_dicts.extend(results_by_index[idx])
+
+        print(f"Total rules before de-duplication: {len(all_rule_dicts)}")
+    else:
+        # Fallback: single-pass extraction (original behaviour)
+        prompt = SECTION_PROMPT.format(
+            global_context=global_context,
+            prior_rules_context="",
+            section_heading="Full Document",
+            section_text=full_text,
+        )
+        raw_text = ""
+        with client.messages.stream(
+            model=MODEL,
+            max_tokens=32768,
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            for text in stream.text_stream:
+                raw_text += text
+
+        raw_text = _strip_json_fences(raw_text)
+        raw_text = _repair_truncated_json(raw_text)
+        all_rule_dicts = json.loads(raw_text)
+
+    # ── De-duplicate and renumber ──
+    all_rule_dicts = _deduplicate_rules(all_rule_dicts)
+    all_rule_dicts = _renumber_rules(all_rule_dicts)
+
+    # ── Convert to ExtractedRule objects ──
     rules: list[ExtractedRule] = []
-    for r in rules_data:
-        # Ensure required fields have defaults
+    for r in all_rule_dicts:
         r.setdefault("policy_doc_id", doc_id)
         r.setdefault("doc_name", doc_name)
         r.setdefault("version", "1.0")
@@ -223,7 +387,6 @@ def extract_rules(
             rule = ExtractedRule(**r)
             rules.append(rule)
         except Exception as e:
-            # Log but don't crash — partial extraction is better than none
             print(f"Warning: skipping rule {r.get('rule_id', '?')}: {e}")
 
     # Collect sections that produced rules
