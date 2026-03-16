@@ -7,17 +7,44 @@ automated scoring and a JSON eval report.
 
 import json
 import os
+import pathlib
 from datetime import datetime, timezone
 
 from schema import ExtractedRule, EvalReport
 
+# Load canonical dictionary for field normalisation during eval matching
+_CANONICAL_PATH = pathlib.Path(__file__).parent.parent / "canonical" / "dictionary.json"
+try:
+    with open(_CANONICAL_PATH) as _f:
+        _CANONICAL_DICT = json.load(_f)
+except FileNotFoundError:
+    _CANONICAL_DICT = {"fields": {}}
+
+# Build reverse map: canonical long-form and common variations → short key
+_FIELD_NORM: dict[str, str] = {}
+for _key, _meta in _CANONICAL_DICT.get("fields", {}).items():
+    _FIELD_NORM[_key] = _key
+    _FIELD_NORM[_meta["canonical"]] = _key
+
+
+def _normalise_field(field: str) -> str:
+    """Normalise a field name to its canonical short form."""
+    f = field.lower().strip()
+    if f in _FIELD_NORM:
+        return _FIELD_NORM[f]
+    # Try common prefix substitutions
+    stripped = f.replace("maximum_", "max_").replace("minimum_", "min_")
+    if stripped in _FIELD_NORM:
+        return _FIELD_NORM[stripped]
+    return f
+
 
 def _match_key(rule: dict | ExtractedRule) -> tuple[str, str]:
-    """Create a matching key from (category, field) for rule comparison."""
+    """Create a matching key from (category, normalised field) for rule comparison."""
     if isinstance(rule, dict):
-        return (rule.get("category", "").lower(), rule.get("field", "").lower())
+        return (rule.get("category", "").lower(), _normalise_field(rule.get("field", "")))
     cat = rule.category.value if hasattr(rule.category, "value") else str(rule.category)
-    return (cat.lower(), rule.field.lower())
+    return (cat.lower(), _normalise_field(rule.field))
 
 
 def compute_precision_recall(

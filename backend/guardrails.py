@@ -21,6 +21,7 @@ from parser import ParsedDocument
 
 client = anthropic.Anthropic()
 MODEL = "claude-sonnet-4-6"
+FAST_MODEL = "claude-haiku-4-5-20251001"
 
 
 # ── Guardrail 1: Hallucination Check (F-09) ──
@@ -155,13 +156,17 @@ Return a JSON array of objects with:
 Return ONLY the JSON array."""
 
     try:
-        response = client.messages.create(
-            model=MODEL,
+        # Use Haiku for classification (lightweight task, 3-5x faster)
+        raw_text = ""
+        with client.messages.stream(
+            model=FAST_MODEL,
             max_tokens=4096,
             messages=[{"role": "user", "content": validation_prompt}],
-        )
+        ) as stream:
+            for text in stream.text_stream:
+                raw_text += text
 
-        raw = response.content[0].text.strip()
+        raw = raw_text.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
         if raw.endswith("```"):

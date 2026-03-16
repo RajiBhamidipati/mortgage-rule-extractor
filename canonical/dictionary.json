@@ -38,6 +38,10 @@
     "max_age_at_term_end": {"canonical": "maximum_age_at_term_end", "category": "applicant", "type": "numeric", "unit": "years"},
     "max_applicants": {"canonical": "maximum_applicants_per_application", "category": "applicant", "type": "numeric", "unit": null},
     "min_term": {"canonical": "minimum_mortgage_term_years", "category": "loan", "type": "numeric", "unit": "years"},
-    "max_term": {"canonical": "maximum_mortgage_term_years", "category": "loan", "type": "numeric", "unit": "years"}
+    "max_term": {"canonical": "maximum_mortgage_term_years", "category": "loan", "type": "numeric", "unit": "years"},
+    "pmi_required": {"canonical": "pmi_required_above_ltv", "category": "ltv", "type": "boolean", "unit": null},
+    "high_value_approval": {"canonical": "high_value_approval_threshold", "category": "ltv", "type": "numeric", "unit": "£"},
+    "probation_accepted": {"canonical": "probation_period_accepted", "category": "employment", "type": "boolean", "unit": null},
+    "zero_hours_accepted": {"canonical": "zero_hours_contract_accepted", "category": "employment", "type": "boolean", "unit": null}
   }
 }

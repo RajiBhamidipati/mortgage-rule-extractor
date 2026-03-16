@@ -1,14 +1,14 @@
 """Rule extraction using Claude API — chunked by section.
 
-Sends each document section to Claude individually with global context,
-then merges and de-duplicates results. This avoids token-limit truncation
-on large documents and improves extraction quality.
+Sends each document section to Claude individually with global context
+and canonical field vocabulary, then merges, normalises, and de-duplicates.
 
 Implements PRD F-05 through F-08c.
 """
 
 import json
 import os
+import pathlib
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -25,68 +25,111 @@ client = anthropic.Anthropic()  # Uses ANTHROPIC_API_KEY env var
 
 MODEL = "claude-sonnet-4-6"
 
-SECTION_PROMPT = """You are a mortgage lending policy analyst specialising in extracting structured rules from lender criteria documents.
+# ── Load canonical dictionary for field name constraints ──
+
+CANONICAL_PATH = pathlib.Path(__file__).parent.parent / "canonical" / "dictionary.json"
+try:
+    with open(CANONICAL_PATH) as _f:
+        CANONICAL_DICT = json.load(_f)
+except FileNotFoundError:
+    CANONICAL_DICT = {"fields": {}, "categories": {}}
+
+# Build reverse lookup: canonical long-form → short key, plus key → key
+_FIELD_REVERSE_MAP: dict[str, str] = {}
+for _key, _meta in CANONICAL_DICT.get("fields", {}).items():
+    _FIELD_REVERSE_MAP[_key] = _key
+    _FIELD_REVERSE_MAP[_meta["canonical"]] = _key
+    # Also map common variations (underscores to match)
+    _FIELD_REVERSE_MAP[_meta["canonical"].replace("_", " ")] = _key
+
+
+def _build_canonical_field_list() -> str:
+    """Build a formatted reference of all canonical field names for the prompt."""
+    fields = CANONICAL_DICT.get("fields", {})
+    if not fields:
+        return ""
+    lines = [
+        "## CANONICAL FIELD NAMES (MANDATORY)",
+        "You MUST use one of these exact field names in the \"field\" property when a match exists. Do NOT invent your own field names.",
+        "",
+    ]
+    # Group by category
+    by_cat: dict[str, list[str]] = {}
+    for key, meta in fields.items():
+        cat = meta.get("category", "other")
+        unit = meta.get("unit") or ""
+        by_cat.setdefault(cat, []).append(f"  - {key} ({unit})" if unit else f"  - {key}")
+
+    for cat in sorted(by_cat):
+        lines.append(f"**{cat.upper()}:**")
+        lines.extend(sorted(by_cat[cat]))
+        lines.append("")
+
+    lines.append("If no canonical field name fits, use the closest match prefixed with the category (e.g. loan:deposit_source).")
+    return "\n".join(lines)
+
+
+CANONICAL_FIELDS_BLOCK = _build_canonical_field_list()
+
+# ── Boilerplate section detection (shared with guardrails) ──
+
+BOILERPLATE_HEADINGS = [
+    "table of contents", "contents", "introduction", "appendix",
+    "definitions", "glossary", "version history", "change log",
+    "document control", "disclaimer",
+]
+
+
+def _is_boilerplate_section(heading: str) -> bool:
+    lower = heading.lower()
+    return any(bp in lower for bp in BOILERPLATE_HEADINGS)
+
+
+# ── Prompt template (trimmed for token efficiency) ──
+
+SECTION_PROMPT = """You are a mortgage lending policy analyst extracting structured rules from lender criteria documents.
 
 ## TASK
-Extract ALL lending rules from the SECTION TEXT below. Be exhaustive — every threshold, limit, condition, requirement, and eligibility criterion is a rule.
+Extract ALL lending rules from the section below. Every threshold, limit, condition, requirement, and eligibility criterion is a rule.
 
 ## GLOBAL CONTEXT
 {global_context}
 
-{prior_rules_context}
+{canonical_fields}
 
 ## OUTPUT FORMAT
-Return a JSON array. Each element must have ALL of these fields:
+Return a JSON array. Each rule object must have these fields:
+- **rule_id**: sequential ID (e.g. LTV_001, INC_001, EMP_001, CRD_001, PROP_001, AFF_001, APP_001, LOAN_001)
+- **category**: one of: ltv, income, employment, credit, property, affordability, applicant, loan
+- **field**: use a canonical field name from the list above when possible
+- **operator**: one of: <=, >=, ==, IN, NOT IN, BETWEEN
+- **value**: the threshold or allowed value(s)
+- **unit**: %, £, years, months, x, or null
+- **conditions**: qualifying context object or null
+- **outcome**: PASS, REFER, or DECLINE
+- **failure_outcome**: REFER or DECLINE
+- **nl_statement**: clear English rule statement
+- **source_quote**: EXACT VERBATIM text from the section (non-negotiable)
+- **source_section**: section heading
+- **source_page**: integer or null
+- **condition_logic**: IF/THEN expression or null
+- **precedence**: integer (1=lowest, higher overrides lower)
+- **rule_scope**: "general" or "specific_exception"
+- **overrides_rule_id**: rule_id of overridden general rule, or null
+- **footnote_ref**: footnote text or null
 
-```json
-{{
-  "rule_id": "string — sequential: LTV_001, INC_001, EMP_001, CRD_001, PROP_001, AFF_001, APP_001, LOAN_001 etc.",
-  "category": "string — one of: ltv, income, employment, credit, property, affordability, applicant, loan",
-  "field": "string — the specific data field tested, e.g. max_ltv, min_income, employment_type",
-  "operator": "string — one of: <=, >=, ==, IN, NOT IN, BETWEEN",
-  "value": "string — the threshold or allowed value(s)",
-  "unit": "string or null — %, £, years, months, etc.",
-  "conditions": "object or null — qualifying context e.g. {{\\"property_type\\": \\"new_build\\"}}",
-  "outcome": "string — PASS, REFER, or DECLINE",
-  "failure_outcome": "string — REFER or DECLINE",
-  "nl_statement": "string — clear English rule statement",
-  "source_quote": "string — EXACT VERBATIM text from the section. Copy word-for-word. Do not paraphrase.",
-  "source_section": "string — section heading this rule appears under",
-  "source_page": "integer or null",
-  "condition_logic": "string or null — full IF/THEN expression, e.g. IF property_type == 'HMO' THEN max_ltv = 70%",
-  "precedence": "integer — 1 = lowest priority, higher = overrides lower",
-  "rule_scope": "string — 'general' for base rules, 'specific_exception' for narrower overrides",
-  "overrides_rule_id": "string or null — if specific_exception, the rule_id of the general rule it overrides",
-  "footnote_ref": "string or null — any asterisk or footnote reference"
-}}
-```
-
-## CRITICAL INSTRUCTIONS
-
-1. **EVERY rule must have a verbatim source_quote** copied exactly from the section text. This is non-negotiable.
-
-2. **Rule scope classification (F-08b):** When multiple rules apply to the same field (e.g. LTV):
-   - The broadest rule is scope: "general" with lower precedence
-   - Narrower exceptions are scope: "specific_exception" with higher precedence and overrides_rule_id set
-   - If you cannot determine the hierarchy, set both to "general" — the guardrail system will flag conflicts
-
-3. **Ambiguous language (F-08):** If the source text uses vague language like "typically", "may", "in most cases", "considered on a case-by-case basis", "at the lender's discretion":
-   - Still extract the rule
-   - Set the outcome to "REFER"
-   - Add a note in condition_logic: "MANUAL_LOGIC_REQUIRED: [exact vague phrase]"
-
-4. **Footnotes (F-12b):** If a value in a table has an asterisk (*) or numeric footnote, capture the footnote text in footnote_ref.
-
-5. **Be exhaustive:** Extract EVERY rule, including implicit ones. A statement like "applicants must be 18+" is a rule. Missing a rule is worse than extracting a borderline one.
-
-6. **Tables:** Treat each row of a criteria table as a separate rule unless rows are clearly sub-conditions of a single rule.
-
-7. **If this section contains no extractable rules**, return an empty array: []
+## RULES
+- Every rule MUST have a verbatim source_quote copied from the section
+- Ambiguous language ("typically", "may", "case-by-case") → outcome: REFER, condition_logic: "MANUAL_LOGIC_REQUIRED: [phrase]"
+- Table rows → separate rules unless clearly sub-conditions of one rule
+- Footnotes (*,†) → capture in footnote_ref
+- General vs exception: broadest rule = "general" (lower precedence), narrower = "specific_exception" (higher precedence, set overrides_rule_id)
+- If no rules in this section, return: []
 
 ## SECTION: {section_heading}
 {section_text}
 
-Return ONLY the JSON array. No markdown fences, no explanation, no commentary."""
+Return ONLY the JSON array."""
 
 
 def _strip_json_fences(text: str) -> str:
@@ -102,20 +145,13 @@ def _strip_json_fences(text: str) -> str:
 
 
 def _repair_truncated_json(text: str) -> str:
-    """Attempt to recover a valid JSON array from a truncated response.
-
-    Progressively strips from the end until json.loads succeeds,
-    falling back to finding the last complete object boundary.
-    """
-    # Try parsing as-is first
+    """Attempt to recover a valid JSON array from a truncated response."""
     try:
         json.loads(text)
         return text
     except json.JSONDecodeError:
         pass
 
-    # Strategy: find the last complete '}, {' boundary and close the array
-    # Walk backwards to find the last complete JSON object
     last_brace = text.rfind("}")
     while last_brace > 0:
         candidate = text[: last_brace + 1].rstrip().rstrip(",") + "\n]"
@@ -138,22 +174,6 @@ def _build_global_context(definitions: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _build_prior_rules_context(prior_rules: list[ExtractedRule]) -> str:
-    """Build context about rules already extracted from previous sections."""
-    if not prior_rules:
-        return ""
-    summaries = []
-    for r in prior_rules:
-        summaries.append(f"  - {r.rule_id}: {r.nl_statement} (category: {r.category}, field: {r.field})")
-    lines = [
-        "## RULES ALREADY EXTRACTED FROM PREVIOUS SECTIONS",
-        "The following rules have already been extracted. Do NOT duplicate them.",
-        "If this section contains exceptions or overrides to these rules, use overrides_rule_id to link them.",
-        "",
-    ] + summaries
-    return "\n".join(lines)
-
-
 def _category_prefix(category: str) -> str:
     """Return the ID prefix for a rule category."""
     prefixes = {
@@ -167,35 +187,28 @@ def _category_prefix(category: str) -> str:
 def _extract_section(
     section: ParsedSection,
     global_context: str,
-    prior_rules: list[ExtractedRule],
 ) -> list[dict]:
-    """Extract rules from a single document section via Claude API.
-
-    Returns raw rule dicts (not yet converted to ExtractedRule).
-    """
+    """Extract rules from a single document section via Claude API."""
     section_text = section.text
     if section.tables:
         section_text += "\n\n" + "\n".join(section.tables)
 
-    # Skip very short sections unlikely to contain rules
     if len(section_text.strip()) < 50:
         return []
 
     heading = section.section_heading or "Untitled Section"
-    prior_context = _build_prior_rules_context(prior_rules)
 
     prompt = SECTION_PROMPT.format(
         global_context=global_context,
-        prior_rules_context=prior_context,
+        canonical_fields=CANONICAL_FIELDS_BLOCK,
         section_heading=heading,
         section_text=section_text,
     )
 
-    # Use streaming for long requests
     raw_text = ""
     with client.messages.stream(
         model=MODEL,
-        max_tokens=8192,
+        max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     ) as stream:
         for text in stream.text_stream:
@@ -213,7 +226,6 @@ def _extract_section(
     if not isinstance(rules_data, list):
         return []
 
-    # Inject section metadata
     for r in rules_data:
         if section.page is not None and not r.get("source_page"):
             r["source_page"] = section.page
@@ -221,6 +233,24 @@ def _extract_section(
             r["source_section"] = heading
 
     return rules_data
+
+
+def _normalise_fields(rule_dicts: list[dict]) -> list[dict]:
+    """Normalise field names to canonical short forms using the dictionary."""
+    for r in rule_dicts:
+        field = r.get("field", "").lower().strip()
+        if field in _FIELD_REVERSE_MAP:
+            r["canonical_field"] = _FIELD_REVERSE_MAP[field]
+            r["field"] = _FIELD_REVERSE_MAP[field]
+        else:
+            # Try fuzzy: strip common prefixes/suffixes
+            stripped = field.replace("maximum_", "max_").replace("minimum_", "min_")
+            if stripped in _FIELD_REVERSE_MAP:
+                r["canonical_field"] = _FIELD_REVERSE_MAP[stripped]
+                r["field"] = _FIELD_REVERSE_MAP[stripped]
+            else:
+                r["canonical_field"] = field
+    return rule_dicts
 
 
 def _deduplicate_rules(all_rule_dicts: list[dict]) -> list[dict]:
@@ -263,18 +293,8 @@ def extract_rules(
 ) -> ExtractionResult:
     """Extract rules from document text using Claude API.
 
-    If parsed_doc is provided, uses chunked extraction (one section at a time).
+    If parsed_doc is provided, uses chunked extraction (parallel across sections).
     Otherwise falls back to single-pass extraction on full_text.
-
-    Args:
-        full_text: Complete document text (used as fallback)
-        doc_name: Source filename
-        doc_id: Unique document identifier
-        definitions: Global context definitions (F-03)
-        parsed_doc: Parsed document with sections (for chunked extraction)
-
-    Returns:
-        ExtractionResult with list of ExtractedRule objects
     """
     global_context = _build_global_context(definitions or [])
 
@@ -284,21 +304,22 @@ def extract_rules(
     all_rule_dicts: list[dict] = []
 
     if sections:
-        # Filter to sections worth processing
+        # Filter: skip tiny and boilerplate sections
         viable_sections = [
             s for s in sections
             if len((s.text + " ".join(s.tables if s.tables else [])).strip()) >= 50
+            and not _is_boilerplate_section(s.section_heading or "")
         ]
-        print(f"Extracting from {len(viable_sections)} sections (of {len(sections)} total) in parallel...")
+        print(f"Extracting from {len(viable_sections)} sections (of {len(sections)} total, skipped {len(sections) - len(viable_sections)} boilerplate)...")
 
-        max_workers = min(4, len(viable_sections))  # Cap at 4 concurrent API calls
+        max_workers = min(8, len(viable_sections))  # Up to 8 concurrent API calls
 
         def _extract_with_index(args):
             idx, section = args
             heading = section.section_heading or "Untitled"
             print(f"[{idx+1}/{len(viable_sections)}] Starting: {heading} ({section.char_count} chars)")
             try:
-                rules = _extract_section(section, global_context, [])
+                rules = _extract_section(section, global_context)
                 print(f"[{idx+1}/{len(viable_sections)}] Done: {heading} → {len(rules)} rules")
                 return rules
             except Exception as e:
@@ -310,29 +331,27 @@ def extract_rules(
                 executor.submit(_extract_with_index, (i, s)): i
                 for i, s in enumerate(viable_sections)
             }
-            # Collect results in original section order
             results_by_index: dict[int, list[dict]] = {}
             for future in as_completed(futures):
                 idx = futures[future]
                 results_by_index[idx] = future.result()
 
-            # Merge in section order
             for idx in sorted(results_by_index):
                 all_rule_dicts.extend(results_by_index[idx])
 
         print(f"Total rules before de-duplication: {len(all_rule_dicts)}")
     else:
-        # Fallback: single-pass extraction (original behaviour)
+        # Fallback: single-pass extraction
         prompt = SECTION_PROMPT.format(
             global_context=global_context,
-            prior_rules_context="",
+            canonical_fields=CANONICAL_FIELDS_BLOCK,
             section_heading="Full Document",
             section_text=full_text,
         )
         raw_text = ""
         with client.messages.stream(
             model=MODEL,
-            max_tokens=32768,
+            max_tokens=16384,
             messages=[{"role": "user", "content": prompt}],
         ) as stream:
             for text in stream.text_stream:
@@ -342,7 +361,8 @@ def extract_rules(
         raw_text = _repair_truncated_json(raw_text)
         all_rule_dicts = json.loads(raw_text)
 
-    # ── De-duplicate and renumber ──
+    # ── Post-processing pipeline ──
+    all_rule_dicts = _normalise_fields(all_rule_dicts)
     all_rule_dicts = _deduplicate_rules(all_rule_dicts)
     all_rule_dicts = _renumber_rules(all_rule_dicts)
 
@@ -363,6 +383,7 @@ def extract_rules(
         r.setdefault("precedence", 1)
         r.setdefault("overrides_rule_id", None)
         r.setdefault("footnote_ref", None)
+        r.setdefault("canonical_field", None)
 
         # Convert guardrail_flags from raw dicts/strings to GuardrailFlag objects
         raw_flags = r.get("guardrail_flags", [])
@@ -389,7 +410,6 @@ def extract_rules(
         except Exception as e:
             print(f"Warning: skipping rule {r.get('rule_id', '?')}: {e}")
 
-    # Collect sections that produced rules
     sections_with_rules = set(r.source_section for r in rules if r.source_section)
 
     return ExtractionResult(
